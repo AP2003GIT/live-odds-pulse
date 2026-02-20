@@ -1,0 +1,665 @@
+LIVE ODDS PULSE - FULL BEGINNER WALKTHROUGH
+===========================================
+
+Goal of this document
+---------------------
+This file explains the entire project in very simple language, step by step.
+It is written for someone who wants zero assumptions and wants to understand:
+- what each file does
+- what happens when the app starts
+- how live odds updates work
+- how filtering and favorites work
+- how tests work
+- how CI works
+
+
+1) What this project is
+-----------------------
+Project name: live-odds-pulse
+
+It is a frontend web app built with Vue 3.
+The app shows a list of sports matches and betting odds.
+Odds change automatically every ~1.4 seconds (mocked stream).
+Users can:
+- filter by sport
+- filter by league
+- search teams by text
+- save favorite matches
+
+The project is intentionally small, but built in a "professional" style:
+- reusable components
+- centralized state store (Pinia)
+- unit + integration tests
+- GitHub Actions CI
+
+
+2) Tech stack and why each tool exists
+--------------------------------------
+1. JavaScript (ES modules)
+   Why: main language of the app.
+
+2. Vue 3
+   Why: component-based UI framework.
+
+3. Pinia
+   Why: global state management.
+   We keep match data, filters, and stream state in one store.
+
+4. Vite
+   Why: fast dev server and build tool.
+
+5. Vitest + @vue/test-utils + jsdom
+   Why: test store logic and component integration in a simulated browser.
+
+6. GitHub Actions
+   Why: run tests + build automatically on push/PR.
+
+
+3) Folder and file map
+----------------------
+Root files:
+- package.json
+- vite.config.js
+- index.html
+- README.md
+- .gitignore
+- PROJECT_EXPLAINED.txt (this file)
+- .github/workflows/ci.yml
+
+Source files (src/):
+- main.js
+- App.vue
+- styles.css
+- data/seedMatches.js
+- services/mockOddsStream.js
+- stores/matches.js
+- components/FilterBar.vue
+- components/LiveBoard.vue
+- components/LiveMatchCard.vue
+
+Tests (tests/):
+- setup.js
+- matches.store.spec.js
+- filter.integration.spec.js
+
+
+4) Root file details
+--------------------
+A) package.json
+Contains:
+- metadata: name/version/private/type
+- scripts:
+  - dev: run Vite local server
+  - build: production build
+  - preview: preview build output
+  - test: run tests once
+  - test:watch: run tests in watch mode
+- dependencies:
+  - vue, pinia
+- devDependencies:
+  - vite, @vitejs/plugin-vue
+  - vitest, @vue/test-utils, jsdom
+
+B) vite.config.js
+Defines Vite setup:
+- enables Vue plugin
+- configures test environment:
+  - jsdom for browser-like environment
+  - setup file tests/setup.js
+  - globals true (so describe/it/expect available)
+  - coverage reporters text and html
+
+C) index.html
+Very small HTML shell.
+Important part:
+- <div id="app"></div>
+Vue mounts into this element.
+- Loads /src/main.js as module.
+
+D) .github/workflows/ci.yml
+CI pipeline:
+- triggers on pushes to main and pull requests
+- runs on ubuntu-latest
+- steps:
+  1. checkout code
+  2. install Node 20
+  3. npm ci
+  4. npm run test
+  5. npm run build
+
+This proves in GitHub that your app compiles and tests pass.
+
+
+5) App boot process (what happens from zero)
+--------------------------------------------
+When user opens the app URL:
+
+Step 1.
+Browser downloads index.html.
+
+Step 2.
+index.html loads src/main.js.
+
+Step 3.
+main.js:
+- imports createApp from Vue
+- imports createPinia
+- imports App.vue and styles.css
+- creates Vue app
+- attaches Pinia to app
+- mounts app on #app
+
+Step 4.
+App.vue is rendered.
+
+Step 5.
+In App.vue onMounted hook:
+- store.init() loads initial match data + favorites from localStorage
+- store.connect() starts mocked live updates
+
+Step 6.
+UI shows:
+- header with stream status
+- filter bar
+- list of match cards
+
+Step 7.
+Every ~1.4 seconds stream updates one random odd.
+Store updates state.
+Vue re-renders only changed parts.
+
+
+6) Data seed file
+-----------------
+File: src/data/seedMatches.js
+
+Exports: seedMatches (array of match objects).
+Each object has:
+- id: unique identifier
+- sport: Football/Basketball/Tennis
+- league: league name
+- home: home team/player
+- away: away team/player
+- startTime: ISO date string
+- odds object:
+  - home odd
+  - draw odd (0 for sports where draw not used)
+  - away odd
+
+This is the base data loaded when app starts.
+
+
+7) Mock stream service (fake real-time)
+---------------------------------------
+File: src/services/mockOddsStream.js
+
+Purpose:
+Simulate a WebSocket/live feed without backend.
+
+Important constants:
+- marketsBySport:
+  - Football: home/draw/away
+  - Basketball: home/away
+  - Tennis: home/away
+- MIN_ODD = 1.01
+- MAX_ODD = 15
+
+Function: nextOdd(currentValue)
+- random direction (+ or -)
+- random step between 0.01 and 0.09
+- applies change
+- clamps result to min/max
+- rounds to 2 decimals
+
+Function: startMockOddsStream({ matches, onUpdate, intervalMs, onDisconnect })
+- starts setInterval with intervalMs (default 1400ms)
+- each tick:
+  1. if no matches, return
+  2. choose random match
+  3. choose random market allowed for that sport
+  4. generate new odd value using nextOdd()
+  5. call onUpdate({ matchId, market, value })
+- returns stop function:
+  - clearInterval
+  - call onDisconnect if provided
+
+This design mimics a real subscription connection with start/stop.
+
+
+8) Pinia store (central brain)
+------------------------------
+File: src/stores/matches.js
+Store name: matches
+
+Why this is important:
+Instead of each component managing its own copy of data, one store manages all shared state.
+This improves consistency and maintainability.
+
+8.1) Helper constants and functions
+-----------------------------------
+A) FAVORITES_STORAGE_KEY
+String key in localStorage: live-odds-pulse:favorites
+
+B) resetMatch(match)
+Creates runtime version of a match with extra fields:
+- cloned odds object
+- movement object (home/draw/away all "same")
+- isFavorite false
+
+C) safeParseFavorites()
+- reads localStorage
+- parses JSON
+- returns Set of IDs
+- if parsing fails, returns empty Set
+
+D) safeSaveFavorites(matches)
+- gets all isFavorite=true IDs
+- saves JSON array to localStorage
+- wrapped in try/catch to avoid crashes in restricted environments
+
+8.2) State
+----------
+- matches: array of all runtime matches
+- filters:
+  - sport (default All)
+  - league (default All)
+  - search (default empty)
+- isConnected: stream on/off
+- lastUpdatedAt: ISO timestamp of last odds update
+- stopStream: function returned from mock stream to stop interval
+
+8.3) Getters
+------------
+A) sports
+Returns ["All", ...unique sports from matches]
+
+B) leagues
+- if sport filter is All: all leagues
+- else: only leagues for selected sport
+Returns ["All", ...unique leagues]
+
+C) filteredMatches
+Applies all active filters:
+1. sport filter
+2. league filter
+3. text search on "home away"
+Then sorts:
+- favorites first
+- then by startTime ascending
+
+8.4) Actions
+------------
+A) init()
+- reads favorites from localStorage
+- loads seedMatches
+- transforms each with resetMatch()
+- sets isFavorite true when ID is in favorites set
+- resets lastUpdatedAt to null
+
+B) connect()
+- if already connected (stopStream exists), do nothing
+- set isConnected true
+- start stream with startMockOddsStream()
+- on updates, call applyOddsUpdate
+- on disconnect callback, set isConnected false
+
+C) disconnect()
+- if stopStream exists, call it and clear it
+- set isConnected false
+
+D) setFilters(partialFilters)
+- merges new partial values into filters
+- validates league against current available leagues
+  (if invalid after sport change, resets league to All)
+
+E) toggleFavorite(matchId)
+- find match by ID
+- flip isFavorite boolean
+- persist favorites to localStorage
+
+F) applyOddsUpdate({ matchId, market, value })
+- find match by ID
+- verify market exists in match.odds
+- compare previous vs new value
+- set movement:
+  - up if increased
+  - down if decreased
+  - same if equal
+- save new odd value
+- update lastUpdatedAt timestamp
+
+
+9) Main app component
+---------------------
+File: src/App.vue
+
+This is the page shell that coordinates everything.
+
+Imports:
+- Vue lifecycle/computed APIs
+- FilterBar component
+- LiveBoard component
+- useMatchesStore
+
+Lifecycle:
+- onMounted:
+  - store.init()
+  - store.connect()
+- onBeforeUnmount:
+  - store.disconnect() to avoid leaked interval
+
+Computed:
+- lastUpdateText
+  - if never updated: "waiting for first update"
+  - else show local time of last update
+
+Methods:
+- toggleStream()
+  - if connected -> disconnect
+  - else -> connect
+
+Template sections:
+1. Header:
+   - app title and hint text
+   - connection status badge
+   - last updated text
+   - pause/resume button
+2. FilterBar:
+   - passes sports/leagues/filters as props
+   - receives update-filters event and calls store.setFilters
+3. LiveBoard:
+   - passes filteredMatches
+   - receives toggle-favorite event and calls store.toggleFavorite
+
+
+10) FilterBar component
+-----------------------
+File: src/components/FilterBar.vue
+
+Purpose:
+Collect filter input from user.
+
+Props:
+- sports array
+- leagues array
+- filters object
+
+Emits:
+- update-filters
+
+Handlers:
+- onSportChange:
+  emits new sport and resets league to All
+- onLeagueChange:
+  emits only new league
+- onSearchChange:
+  emits search text
+
+UI:
+- select for sport
+- select for league
+- search input for team names
+- labeled controls with aria labels
+
+
+11) LiveBoard component
+-----------------------
+File: src/components/LiveBoard.vue
+
+Purpose:
+Render list of cards.
+
+Props:
+- matches array
+
+Emits:
+- toggle-favorite
+
+Behavior:
+- if no matches: show empty state message
+- else loop matches and render LiveMatchCard for each
+
+
+12) LiveMatchCard component
+---------------------------
+File: src/components/LiveMatchCard.vue
+
+Purpose:
+Display one match and its odds.
+
+Props:
+- match object
+
+Emits:
+- toggle-favorite (with match ID)
+
+Helpers:
+- formatStartTime(value): local HH:MM
+- movementSymbol(direction):
+  - up -> +
+  - down -> -
+  - same -> =
+- movementClass(direction):
+  - up -> is-up
+  - down -> is-down
+  - same -> is-same
+
+Template:
+- header with league + teams + kickoff
+- save/saved button with aria-pressed state
+- odds grid:
+  - Home always shown
+  - Draw shown only if draw odd > 0
+  - Away always shown
+- each odd shows number and movement sign/color
+
+
+13) Styling system
+------------------
+File: src/styles.css
+
+Design approach:
+- custom CSS variables for colors and states
+- gradient background for visual personality
+- cards with subtle elevation and borders
+- responsive layout using media query
+
+Important layout pieces:
+- .app-shell: main constrained width container
+- .top-header: title + status panel
+- .filter-bar: grid for form controls
+- .board: auto-fill card grid
+- .match-card: card styling + entry animation
+
+Accessibility and usability touches:
+- strong contrast on text and badges
+- clear button states
+- consistent spacing and readable type sizes
+
+Responsive behavior:
+At max-width 860px:
+- header stacks vertically
+- status panel full width
+- filter bar becomes single column
+
+
+14) Test setup and test files
+-----------------------------
+A) tests/setup.js
+beforeEach -> localStorage.clear()
+Meaning every test starts clean and independent.
+
+B) tests/matches.store.spec.js
+Unit tests for Pinia store logic:
+
+Test 1: loads seed + favorites
+- set favorite ID in localStorage
+- call store.init()
+- expect matches loaded
+- expect saved match has isFavorite=true
+
+Test 2: toggle favorites persists
+- init store
+- toggle a match
+- read localStorage
+- expect ID exists in saved array
+
+Test 3: movement direction updates correctly
+- init store
+- update one odd up -> expect movement up
+- update same odd down -> expect movement down
+
+C) tests/filter.integration.spec.js
+Integration test for App + store + UI wiring.
+
+- mocks stream service to avoid real interval noise
+- mounts App with Pinia plugin
+- waits next tick for mounted initialization
+- types "Madrid" in search input
+- asserts:
+  - filteredMatches length is 1
+  - item contains Madrid
+  - only one rendered match card exists
+
+This proves end-to-end behavior of filters through UI and store.
+
+
+15) CI workflow explanation (line by line conceptually)
+-------------------------------------------------------
+File: .github/workflows/ci.yml
+
+- name: CI
+  workflow name shown in GitHub Actions tab
+
+- on: push to main + pull_request
+  run checks on merges and PRs
+
+- job test-and-build:
+  a single job that ensures code quality
+
+- uses actions/checkout
+  pulls repo code to runner
+
+- uses actions/setup-node@v4 with node-version 20
+  ensures deterministic Node runtime
+
+- npm ci
+  clean install from lockfile (fast/reliable for CI)
+
+- npm run test
+  executes Vitest suite
+
+- npm run build
+  ensures production build succeeds
+
+
+16) Local commands and what each does
+-------------------------------------
+From project folder:
+
+1. npm install
+Installs all dependencies in package.json.
+
+2. npm run dev
+Starts Vite dev server for local development.
+You get hot reload when files change.
+
+3. npm run test
+Runs tests once and exits.
+Use before pushing code.
+
+4. npm run build
+Builds optimized production bundle in dist/.
+Use to validate release readiness.
+
+5. npm run preview
+Serves built dist files locally to inspect production output.
+
+
+17) Real user interaction flow examples
+---------------------------------------
+Example A: User filters by sport
+1. User chooses "Football" in FilterBar.
+2. FilterBar emits update-filters event.
+3. App forwards to store.setFilters().
+4. store.filters.sport updates.
+5. leagues getter recalculates football-only leagues.
+6. filteredMatches getter recalculates visible list.
+7. LiveBoard re-renders with football matches only.
+
+Example B: User favorites a match
+1. User clicks Save button on card.
+2. LiveMatchCard emits toggle-favorite(matchId).
+3. LiveBoard passes event up to App.
+4. App calls store.toggleFavorite(matchId).
+5. match.isFavorite flips true/false.
+6. safeSaveFavorites writes IDs to localStorage.
+7. filteredMatches resorts so favorites appear first.
+8. UI updates button label to Saved.
+
+Example C: Live odd update arrives
+1. setInterval tick runs in mock stream.
+2. random match + market selected.
+3. new odd generated.
+4. store.applyOddsUpdate called.
+5. previous odd compared with next odd.
+6. movement direction set (up/down/same).
+7. odd value replaced.
+8. lastUpdatedAt timestamp refreshed.
+9. only affected UI values re-render.
+
+
+18) Why this architecture is good for interviews
+------------------------------------------------
+This project demonstrates you understand:
+- state centralization vs scattered component state
+- separating concerns:
+  - data (seed)
+  - side effects (stream service)
+  - business logic (store)
+  - presentation (components)
+- persistence (localStorage)
+- reactive filtering and derived data (getters)
+- test layering:
+  - unit tests for logic
+  - integration test for UI wiring
+- CI quality gate in real repo workflow
+
+
+19) How to extend this project (practical roadmap)
+---------------------------------------------------
+If you want to keep improving:
+
+1. Replace mock stream with real WebSocket backend.
+2. Add optimistic UI and reconnect backoff strategy.
+3. Add loading skeletons and error toasts.
+4. Add virtualization for very large match lists.
+5. Add E2E tests (Playwright/Cypress).
+6. Add linting and formatting checks in CI.
+7. Add TypeScript migration for stronger type safety.
+
+
+20) Common beginner confusion points
+------------------------------------
+Q: Why use Pinia for a small app?
+A: Because this mirrors real production architecture and scales better.
+
+Q: Why "draw" exists but is 0 for tennis/basketball?
+A: Simplifies model consistency while UI hides draw when value <= 0.
+
+Q: Why use try/catch around localStorage?
+A: Some environments block storage; app should not crash.
+
+Q: Why mock stream in tests?
+A: Random intervals make tests flaky. Mocking gives deterministic behavior.
+
+
+21) Quick script to explain in interview
+----------------------------------------
+"I built a Vue 3 real-time odds dashboard with Pinia state management. The app simulates live updates using a stream service that emits random market changes. The store applies updates, tracks movement direction, persists favorites in localStorage, and exposes derived getters for filters. I separated UI into reusable components, added unit tests for store behavior and an integration test for search filtering, and configured GitHub Actions to run tests and production builds on each push/PR."
+
+
+22) Final mental model in one sentence
+--------------------------------------
+Think of this app as: "A clean Vue UI sitting on top of a single Pinia brain, fed by a fake live data pipe, with filters, persistence, tests, and CI proving it is production-minded."
+
